@@ -5196,11 +5196,12 @@ func gcd(a, b uint32) uint32 {
 // An initTask represents the set of initializations that need to be done for a package.
 type initTask struct {
 	// TODO: pack the first 3 fields more tightly?
-	state uintptr // 0 = uninitialized, 1 = in progress, 2 = done
-	ndeps uintptr
-	nfns  uintptr
+	state   uintptr // 0 = uninitialized, 1 = in progress, 2 = done
+	ndeps   uintptr
+	nfns    uintptr
+	nvarfns uintptr
 	// followed by ndeps instances of an *initTask, one per package depended on
-	// followed by nfns pcs, one per init function to run
+	// followed by nfns+nvarfns pcs, one per init function to run
 }
 
 func doInit(t *initTask) {
@@ -5212,12 +5213,19 @@ func doInit(t *initTask) {
 	default: // not initialized yet
 		t.state = 1 // initialization in progress
 		for i := uintptr(0); i < t.ndeps; i++ {
-			p := add(unsafe.Pointer(t), (3+i)*sys.PtrSize)
+			p := add(unsafe.Pointer(t), (4+i)*sys.PtrSize)
 			t2 := *(**initTask)(p)
 			doInit(t2)
 		}
+		for i := uintptr(0); i < t.nvarfns; i++ {
+			p := add(unsafe.Pointer(t), (4+t.ndeps+t.nfns+i)*sys.PtrSize)
+			if *(*uint64)(unsafe.Pointer(p)) != 0 {
+				f := *(*func())(unsafe.Pointer(&p))
+				f()
+			}
+		}
 		for i := uintptr(0); i < t.nfns; i++ {
-			p := add(unsafe.Pointer(t), (3+t.ndeps+i)*sys.PtrSize)
+			p := add(unsafe.Pointer(t), (4+t.ndeps+i)*sys.PtrSize)
 			f := *(*func())(unsafe.Pointer(&p))
 			f()
 		}

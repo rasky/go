@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unsafe"
 )
 
 // deadcode marks all reachable symbols.
@@ -108,6 +109,9 @@ func deadcode(ctxt *Link) {
 		}
 	}
 
+	// Remove unreachable init functions
+	d.cleanupInitTask()
+
 	if ctxt.BuildMode != BuildModeShared {
 		// Keep a itablink if the symbol it points at is being kept.
 		// (When BuildModeShared, always keep itablinks.)
@@ -160,6 +164,7 @@ type deadcodepass struct {
 	ifaceMethod     map[methodsig]bool // methods declared in reached interfaces
 	markableMethods []methodref        // methods of reached types
 	reflectMethod   bool
+	initTasks       []string // reachable inittasks
 }
 
 func (d *deadcodepass) cleanupReloc(r *sym.Reloc) {
@@ -171,6 +176,33 @@ func (d *deadcodepass) cleanupReloc(r *sym.Reloc) {
 		}
 		r.Sym = nil
 		r.Siz = 0
+	}
+}
+
+func (d *deadcodepass) cleanupInitTask() {
+	for _, it := range d.initTasks {
+		s := d.ctxt.Syms.ROLookup(it, 0)
+
+		var R []sym.Reloc
+		for i := range s.R {
+			r := &s.R[i]
+			if r.Sym.Attr.Reachable() {
+				R = append(R, *r)
+			} else {
+				// If the symbol is not reachable, we need to nil its pointer
+				// within inittask and remove the relocation
+				if s.Attr.ReadOnly() {
+					// The symbol's content is backed by read-only memory.
+					// Copy it to writable memory.
+					s.P = append([]byte(nil), s.P...)
+					s.Attr.Set(sym.AttrReadOnly, false)
+				}
+				for i := r.Off; i < r.Off+int32(r.Siz); i++ {
+					s.P[i] = 0
+				}
+			}
+		}
+		s.R = R
 	}
 }
 
@@ -192,6 +224,9 @@ func (d *deadcodepass) mark(s, parent *sym.Symbol) {
 	s.Attr |= sym.AttrReachable
 	if d.ctxt.Reachparent != nil {
 		d.ctxt.Reachparent[s] = parent
+	}
+	if strings.HasSuffix(s.Name, ".inittask") {
+		d.initTasks = append(d.initTasks, s.Name)
 	}
 	d.markQueue = append(d.markQueue, s)
 }
@@ -293,13 +328,51 @@ func (d *deadcodepass) flood() {
 			}
 		}
 
+		numrelocs := len(s.R)
+		if strings.HasSuffix(s.Name, ".inittask") {
+			// When flooding through inittask symbols, ignore variabile initialization
+			// functions: those need to stay alive only if they're reached
+			// through the variables they initialize (which contain a relocation
+			// to them), not just because they're init functions.
+			type initTask struct {
+				state   uintptr
+				ndeps   uintptr
+				nfns    uintptr
+				nvarfns uintptr
+			}
+			var it = (*initTask)(unsafe.Pointer(&s.P[0]))
+			numrelocs -= int(it.nvarfns)
+			println("skipping relocations", s.Name, it.nvarfns)
+		}
+
+		/*
+			if strings.HasPrefix(s.Name, "main") {
+				println("symbol:", s.Name, s.Type.String())
+			}
+
+			var skipreloc int = -1
+			if strings.Contains(s.Name, ".init.var.") {
+				println("inspecting", s.Name)
+				for i := len(s.R)-1; i >= 0; i-- {
+					if s.R[i].Type == objabi.R_PCREL {
+						println("found skippable reloc", s.Name, i)
+						skipreloc = i
+						break
+					}
+				}
+			}
+		*/
 		mpos := 0 // 0-3, the R_METHODOFF relocs of runtime.uncommontype
 		var methods []methodref
-		for i := range s.R {
+		for i := 0; i < numrelocs; i++ {
 			r := &s.R[i]
 			if r.Sym == nil {
 				continue
 			}
+			// if i == skipreloc {
+			// 	println("removed::", r.Sym.Name)
+			// 	continue
+			// }
 			if r.Type == objabi.R_WEAKADDROFF {
 				// An R_WEAKADDROFF relocation is not reason
 				// enough to mark the pointed-to symbol as

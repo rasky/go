@@ -58,7 +58,7 @@ func f() int {
 		panic("traceback truncated after f")
 	}
 	f, more = iter.Next()
-	if f.Function != "a.init" || !strings.HasSuffix(f.File, "a.go") || f.Line != 15 {
+	if f.Function != "a.init.var.0" || !strings.HasSuffix(f.File, "a.go") || f.Line != 15 {
 		panic(fmt.Sprintf("bad init %v\n", f))
 	}
 	if !more {

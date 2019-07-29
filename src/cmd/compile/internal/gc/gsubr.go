@@ -295,7 +295,12 @@ func ggloblnod(nam *Node) {
 	if nam.Type != nil && !types.Haspointers(nam.Type) {
 		flags |= obj.NOPTR
 	}
-	Ctxt.Globl(s, nam.Type.Width, flags)
+	ot := int(nam.Type.Width)
+	if nam.HasInitFunc() {
+		initfun := lookup("init.var." + nam.Sym.Name)
+		ot = dsymptr(s, ot, initfun.Linksym(), 0)
+	}
+	Ctxt.Globl(s, int64(ot), flags)
 }
 
 func ggloblsym(s *obj.LSym, width int32, flags int16) {
